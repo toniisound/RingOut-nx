@@ -3,6 +3,9 @@
 
 #include "VideoCommon/Present.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "Common/ChunkFile.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
@@ -934,7 +937,30 @@ void Presenter::Present(PresentInfo* present_info)
   UpdateDrawRectangle();
 
   g_gfx->BeginUtilityDrawing();
+#ifdef __SWITCH__
+  // Bring-up diagnostic (nx.cfg clear_test=1): clear the backbuffer to magenta
+  // instead of black. Magenta on screen means the window, the context and the
+  // swap all work and only the XFB/overlay draws are lost; black means nothing
+  // drawn into the backbuffer reaches the screen at all. The first frames also
+  // log the sizes every later step depends on.
+  static const bool s_clear_test = std::getenv("RINGOUT_NX_CLEAR_TEST") != nullptr;
+  static int s_logged_presents = 0;
+  if (s_logged_presents < 3)
+  {
+    ++s_logged_presents;
+    const auto target = GetTargetRectangle();
+    std::fprintf(stderr,
+                 "[nx-video] present: backbuffer %dx%d, target (%d,%d)-(%d,%d), xfb %s %dx%d\n",
+                 m_backbuffer_width, m_backbuffer_height, target.left, target.top, target.right,
+                 target.bottom, m_xfb_entry ? "yes" : "NO", m_xfb_rect.GetWidth(),
+                 m_xfb_rect.GetHeight());
+  }
+  const bool backbuffer_bound = g_gfx->BindBackbuffer(
+      s_clear_test ? std::array<float, 4>{{1.0f, 0.0f, 1.0f, 1.0f}} :
+                     std::array<float, 4>{{0.0f, 0.0f, 0.0f, 1.0f}});
+#else
   const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
+#endif
 
   // Render the XFB to the screen.
   if (backbuffer_bound && m_xfb_entry)

@@ -48,6 +48,15 @@ public:
   // Returns true if a module is loaded, otherwise false.
   bool IsOpen() const { return m_handle != nullptr; }
 
+#ifdef __SWITCH__
+  // Horizon has no dynamic loader: everything is linked into the .nro. The
+  // frontend installs a resolver for the few symbols the runtime looks up by
+  // name (the game module's optional exports), and GetSymbolAddress() answers
+  // from it whether or not a library is "open". Open() always fails.
+  using StaticSymbolResolver = void* (*)(const char* name);
+  static void SetStaticSymbolResolver(StaticSymbolResolver resolver);
+#endif
+
   // Loads (or replaces) the handle with the specified library file name.
   // Returns true if the library was loaded and can be used.
   bool Open(const char* filename);

@@ -4,6 +4,10 @@
 #include "VideoCommon/CommandProcessor.h"
 
 #include <atomic>
+#ifdef __SWITCH__
+#include <chrono>
+#include <cstdio>
+#endif
 #include <fmt/format.h>
 
 #include "Common/Assert.h"
@@ -22,6 +26,22 @@
 
 namespace CommandProcessor
 {
+#ifdef __SWITCH__
+namespace
+{
+std::atomic<u64> s_switch_flushes{0};
+std::atomic<u64> s_switch_flush_us{0};
+std::atomic<u64> s_switch_live_writes{0};
+}  // namespace
+
+void GetSwitchFifoStats(u64* flushes, u64* flush_us, u64* live_writes)
+{
+  *flushes = s_switch_flushes.load(std::memory_order_relaxed);
+  *flush_us = s_switch_flush_us.load(std::memory_order_relaxed);
+  *live_writes = s_switch_live_writes.load(std::memory_order_relaxed);
+}
+#endif
+
 static bool IsOnThread(const Core::System& system)
 {
   return system.IsDualCoreMode();
@@ -158,6 +178,42 @@ void CommandProcessorManager::RegisterMMIO(MMIO::Mapping* mmio, u32 base)
 
   for (auto& mapped_var : directly_mapped_vars)
   {
+#ifdef __SWITCH__
+    // Same write as DirectWrite, but first note whether the GPU thread is
+    // still reading the FIFO whose base/end/write pointer is being changed.
+    const bool watched = mapped_var.addr == FIFO_BASE_LO || mapped_var.addr == FIFO_BASE_HI ||
+                         mapped_var.addr == FIFO_END_LO || mapped_var.addr == FIFO_END_HI ||
+                         mapped_var.addr == FIFO_WRITE_POINTER_LO ||
+                         mapped_var.addr == FIFO_WRITE_POINTER_HI;
+    if (watched)
+    {
+      u16* const ptr = mapped_var.ptr;
+      const u16 wmask = mapped_var.wmask;
+      const u32 reg = mapped_var.addr;
+      mmio->Register(
+          base | mapped_var.addr, MMIO::DirectRead<u16>(ptr),
+          MMIO::ComplexWrite<u16>([ptr, wmask, reg](Core::System& system_, u32, u16 val) {
+            const auto& fifo_ = system_.GetCommandProcessor().GetFifo();
+            if (fifo_.bFF_GPReadEnable.load(std::memory_order_relaxed) &&
+                fifo_.CPReadWriteDistance.load(std::memory_order_relaxed) != 0)
+            {
+              if (s_switch_live_writes.fetch_add(1, std::memory_order_relaxed) < 5)
+              {
+                std::fprintf(stderr,
+                             "[fifo] reg %02x <- %04x while the GPU reads it: base=%08x end=%08x "
+                             "wr=%08x rd=%08x dist=%08x\n",
+                             reg, val, fifo_.CPBase.load(std::memory_order_relaxed),
+                             fifo_.CPEnd.load(std::memory_order_relaxed),
+                             fifo_.CPWritePointer.load(std::memory_order_relaxed),
+                             fifo_.CPReadPointer.load(std::memory_order_relaxed),
+                             fifo_.CPReadWriteDistance.load(std::memory_order_relaxed));
+              }
+            }
+            *ptr = static_cast<u16>(val & wmask);
+          }));
+      continue;
+    }
+#endif
     mmio->Register(base | mapped_var.addr, MMIO::DirectRead<u16>(mapped_var.ptr),
                    MMIO::DirectWrite<u16>(mapped_var.ptr, mapped_var.wmask));
   }
@@ -578,7 +634,32 @@ void CommandProcessorManager::SetCpControlRegister()
   {
     m_system.GetFifo().SyncGPUForRegisterAccess();
   }
+  const bool disabling_reads =
+      m_fifo.bFF_GPReadEnable.load(std::memory_order_relaxed) && !m_cp_ctrl_reg.GPReadEnable;
   m_fifo.bFF_GPReadEnable.store(m_cp_ctrl_reg.GPReadEnable, std::memory_order_relaxed);
+#ifdef __SWITCH__
+  // Dual core: wait for the GPU thread to leave its FIFO loop before the CPU
+  // thread goes on to rewrite the FIFO registers. GXSetGPFifo disables reads,
+  // then writes base/end/read pointer/distance; without this wait the GPU
+  // thread, still inside a batch (a first-time shader compile makes that a
+  // long window), finishes it against the NEW registers: it subtracts 32 from
+  // the freshly reset distance ("Negative fifo.CPReadWriteDistance") and
+  // reads the new buffer from the wrong place ("GFX FIFO: Unknown Opcode").
+  // SyncGPUForRegisterAccess above does nothing in this mode. Older upstream
+  // Dolphin flushed here too.
+  if (disabling_reads)
+  {
+    const auto start = std::chrono::steady_clock::now();
+    m_system.GetFifo().FlushGpu();
+    const auto waited = std::chrono::steady_clock::now() - start;
+    s_switch_flushes.fetch_add(1, std::memory_order_relaxed);
+    s_switch_flush_us.fetch_add(
+        std::chrono::duration_cast<std::chrono::microseconds>(waited).count(),
+        std::memory_order_relaxed);
+  }
+#else
+  (void)disabling_reads;
+#endif
   m_fifo.bFF_BPInt.store(m_cp_ctrl_reg.BPInt, std::memory_order_relaxed);
   m_fifo.bFF_BPEnable.store(m_cp_ctrl_reg.BPEnable, std::memory_order_relaxed);
   m_fifo.bFF_HiWatermarkInt.store(m_cp_ctrl_reg.FifoOverflowIntEnable, std::memory_order_relaxed);
@@ -662,6 +743,29 @@ void CommandProcessorManager::HandleUnknownOpcode(u8 cmd_byte, const u8* buffer,
       m_fifo.bFF_HiWatermarkInt.load(std::memory_order_relaxed) ? "true" : "false",
       m_fifo.bFF_LoWatermarkInt.load(std::memory_order_relaxed) ? "true" : "false", ppc_state.pc,
       LR(ppc_state));
+
+#ifdef __SWITCH__
+  // The log line above goes to Dolphin's VIDEO log, which is usually off.
+  // Mirror the first few to ringout.log, with the bytes the GPU tripped on.
+  static std::atomic<int> s_reported{0};
+  if (!suppress_panic_alert && s_reported.fetch_add(1, std::memory_order_relaxed) < 5)
+  {
+    std::fprintf(stderr,
+                 "[fifo] unknown opcode %02x: base=%08x end=%08x wr=%08x rd=%08x dist=%08x "
+                 "read=%d link=%d pc=%08x lr=%08x bytes:",
+                 cmd_byte, m_fifo.CPBase.load(std::memory_order_relaxed),
+                 m_fifo.CPEnd.load(std::memory_order_relaxed),
+                 m_fifo.CPWritePointer.load(std::memory_order_relaxed),
+                 m_fifo.CPReadPointer.load(std::memory_order_relaxed),
+                 m_fifo.CPReadWriteDistance.load(std::memory_order_relaxed),
+                 m_fifo.bFF_GPReadEnable.load(std::memory_order_relaxed) ? 1 : 0,
+                 m_fifo.bFF_GPLinkEnable.load(std::memory_order_relaxed) ? 1 : 0, ppc_state.pc,
+                 LR(ppc_state));
+    for (int i = 0; i < 32; ++i)
+      std::fprintf(stderr, " %02x", buffer[i]);
+    std::fprintf(stderr, "\n");
+  }
+#endif
 
   if (!m_is_fifo_error_seen && !suppress_panic_alert)
   {

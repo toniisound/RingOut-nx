@@ -44,7 +44,26 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=/ringout)
 endif()
 
-if(WIN32)
+# Nintendo Switch (libnx homebrew, .nro). devkitPro's Switch.cmake toolchain
+# sets NINTENDO_SWITCH; the option exists separately so the Switch source set
+# can also be configured on a desktop host to inspect it.
+if(NINTENDO_SWITCH)
+    set(_moderngekko_switch_default ON)
+else()
+    set(_moderngekko_switch_default OFF)
+endif()
+option(MODERNGEKKO_PLATFORM_SWITCH
+       "Build the Nintendo Switch homebrew target (no dlopen, no JIT, libnx frontend)"
+       ${_moderngekko_switch_default})
+
+if(MODERNGEKKO_PLATFORM_SWITCH)
+    # No dynamic loader on Horizon: the game module is linked into the .nro
+    # and handed to the runtime as an attached descriptor.
+    set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT OFF)
+    set(MODERNGEKKO_ENABLE_DYNAMIC_MODULES OFF CACHE BOOL "" FORCE)
+    # The unit tests are desktop executables; none of them can run on Horizon.
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+elseif(WIN32)
     set(MODERNGEKKO_DYNAMIC_MODULES_DEFAULT ON)
 else()
     check_include_file_cxx(dlfcn.h MODERNGEKKO_HAS_DLFCN)
@@ -142,6 +161,35 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     # vendor/dolphin/Externals/zstd/CMakeLists.txt alongside its siblings, so an
     # upstream sync cannot quietly revert it.
     set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    if(MODERNGEKKO_PLATFORM_SWITCH)
+        # Horizon cannot map executable memory without the jit service, and the
+        # recompiled module already covers the game's code, so no JIT at all:
+        # the StaticRecomp core falls back to the interpreter for the OS
+        # exception vectors (~0.2% of cycles on desktop).
+        set(ENABLE_GENERIC ON CACHE BOOL "" FORCE)
+        set(ENABLE_HEADLESS ON CACHE BOOL "" FORCE)
+        set(ENABLE_VULKAN OFF CACHE BOOL "" FORCE)
+        set(ENABLE_X11 OFF CACHE BOOL "" FORCE)
+        set(ENABLE_WAYLAND OFF CACHE BOOL "" FORCE)
+        # EGL comes from switch-mesa; the GL context is created by the Switch
+        # platform (GLContextSwitch), not by Dolphin's X11/Wayland EGL glue.
+        set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
+        set(ENABLE_SDL OFF CACHE BOOL "" FORCE)
+        set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
+        set(ENABLE_ALSA OFF CACHE BOOL "" FORCE)
+        set(ENABLE_PULSEAUDIO OFF CACHE BOOL "" FORCE)
+        set(ENABLE_BLUEZ OFF CACHE BOOL "" FORCE)
+        set(ENABLE_LTO OFF CACHE BOOL "" FORCE)
+        set(LINUX_LOCAL_DEV OFF CACHE BOOL "" FORCE)
+        # Dolphin builds with -std=c++23, not gnu++23, and newlib then hides
+        # everything outside ISO C (vasprintf, strdup, fileno, usleep...) --
+        # glibc builds never notice because g++ predefines _GNU_SOURCE on
+        # Linux. Directory-scoped so the vendored externals get it too.
+        add_compile_definitions(_GNU_SOURCE=1)
+        # Always the vendored copies: devkitPro's portlibs carry different
+        # versions of zlib/zstd/mbedtls, and mixing them breaks at link time.
+        set(USE_SYSTEM_LIBS OFF CACHE STRING "" FORCE)
+    endif()
     add_subdirectory(vendor/dolphin EXCLUDE_FROM_ALL)
     if(MODERNGEKKO_FRONTEND_SDK)
         # These two imported targets historically rely on X11 headers living
@@ -182,7 +230,10 @@ else()
     set(_moderngekko_dolrecomp "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/DolRecomp")
     message(STATUS "DolRecomp: no sibling ../DolRecomp; using the vendored copy")
 endif()
-if(BUILD_TESTING)
+if(MODERNGEKKO_PLATFORM_SWITCH)
+    # dolrecomp is a host tool: it runs on the PC that turns the disc into C.
+    # The Switch build only consumes its output (see platform/switch).
+elseif(BUILD_TESTING)
     add_subdirectory("${_moderngekko_dolrecomp}" dolrecomp-build)
 else()
     add_subdirectory("${_moderngekko_dolrecomp}" dolrecomp-build EXCLUDE_FROM_ALL)
@@ -342,7 +393,11 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     else()
         target_compile_definitions(moderngekko PRIVATE _ARCH_32=1)
     endif()
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
+    if(MODERNGEKKO_PLATFORM_SWITCH)
+        # Must match the Dolphin libraries (ENABLE_GENERIC): the arch macro
+        # changes class layouts in Core headers.
+        target_compile_definitions(moderngekko PRIVATE _M_GENERIC=1)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
         target_compile_definitions(moderngekko PRIVATE _M_X86_64=1)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
         target_compile_definitions(moderngekko PRIVATE _M_ARM_64=1)
@@ -465,14 +520,24 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin_legacy")
 endif()
 
+if(NOT MODERNGEKKO_PLATFORM_SWITCH)
 add_executable(moderngekko-module-info
     tools/module_info.cpp
 )
 target_link_libraries(moderngekko-module-info
     PRIVATE ModernGekko::Runtime
 )
+endif()
 
-if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+if(MODERNGEKKO_PLATFORM_SWITCH)
+    if(NOT MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+        message(FATAL_ERROR "The Switch target needs MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME=ON")
+    endif()
+    target_sources(moderngekko PRIVATE
+        vendor/dolphin/Source/Core/DolphinNoGUI/PlatformSwitch.cpp)
+    target_compile_definitions(moderngekko PRIVATE MODERNGEKKO_HAVE_SWITCH=1)
+    add_subdirectory(platform/switch)
+elseif(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     if(TARGET SDL3-static)
         set(_moderngekko_sdl_target SDL3-static)
     elseif(TARGET SDL3::SDL3-shared)

@@ -9,6 +9,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <arpa/inet.h>  // htons/ntohl: netinet/in.h only brings them in on glibc
 #include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>

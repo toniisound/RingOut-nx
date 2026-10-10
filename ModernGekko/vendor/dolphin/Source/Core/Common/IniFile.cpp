@@ -36,7 +36,11 @@ void IniFile::ParseLine(std::string_view line, std::string* keyOut, std::string*
   }
 }
 
-const std::string& IniFile::NULL_STRING = "";
+// Bound to a named object rather than to the lifetime-extended temporary of
+// `= ""`: devkitA64's GCC hits an internal compiler error (build_cleanup, in
+// cp/decl2.cc) generating the cleanup for that temporary. Same meaning.
+static const std::string s_null_string;
+const std::string& IniFile::NULL_STRING = s_null_string;
 
 IniFile::Section::Section() = default;
 

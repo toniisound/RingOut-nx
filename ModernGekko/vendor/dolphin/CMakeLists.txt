@@ -147,6 +147,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 endif()
 
+# Nintendo Switch homebrew (devkitA64 + libnx). NINTENDO_SWITCH comes from
+# devkitPro's Switch.cmake; MODERNGEKKO_PLATFORM_SWITCH lets the Switch source
+# set be configured on a desktop host for inspection.
+if(NINTENDO_SWITCH OR MODERNGEKKO_PLATFORM_SWITCH)
+  set(DOLPHIN_SWITCH 1)
+  message(STATUS "Building for Nintendo Switch (libnx)")
+endif()
+
 if(UNIX)
   # Builds a relocatable binary on Linux.
   # The Sys folder will need to be copied to the Binaries folder.
@@ -495,7 +503,10 @@ include(CheckCXXSourceRuns)
 
 set(OpenGL_GL_PREFERENCE GLVND CACHE STRING "Linux-only: if GLVND, use the vendor-neutral GL libraries (default). If LEGACY, use the legacy ones (might be necessary to have optirun/primusrun work)")
 set_property(CACHE OpenGL_GL_PREFERENCE PROPERTY STRINGS GLVND LEGACY)
-find_package(OpenGL)
+if(NOT DOLPHIN_SWITCH)
+  # On Switch GL comes from switch-mesa through EGL, linked by the frontend.
+  find_package(OpenGL)
+endif()
 if (OPENGL_GL)
   include_directories(${OPENGL_INCLUDE_DIR})
 endif()
@@ -585,7 +596,7 @@ if(ENABLE_EVDEV)
   endif()
 endif()
 
-if(UNIX)
+if(UNIX AND NOT DOLPHIN_SWITCH)
   message(STATUS "Using named pipes as controller inputs")
   add_definitions(-DUSE_PIPES=1)
   message(STATUS "Watching game memory for changes")
@@ -725,7 +736,7 @@ if(ENABLE_CUBEB)
   add_definitions(-DHAVE_CUBEB)
 endif()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT DOLPHIN_SWITCH)
   dolphin_find_optional_system_library(LibUSB Externals/libusb)
   add_definitions(-D__LIBUSB__)
 endif()
@@ -750,10 +761,23 @@ if(USE_UPNP)
 endif()
 
 dolphin_find_optional_system_library(MBEDTLS Externals/mbedtls 2.28)
+if(DOLPHIN_SWITCH)
+  # PUBLIC: the config changes which declarations the headers expose, so
+  # every consumer must see the same one (see Externals/mbedtls/switch).
+  target_compile_definitions(mbedcrypto PUBLIC
+    MBEDTLS_USER_CONFIG_FILE="mbedtls_switch_config.h")
+  target_include_directories(mbedcrypto PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/Externals/mbedtls/switch)
+  target_sources(mbedcrypto PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/Externals/mbedtls/switch/entropy_switch.c)
+endif()
 
-dolphin_find_optional_system_library(CURL Externals/curl)
+if(NOT DOLPHIN_SWITCH)
+  # Switch: Common/HttpRequestStub.cpp stands in for libcurl.
+  dolphin_find_optional_system_library(CURL Externals/curl)
+endif()
 
-if(NOT ANDROID)
+if(NOT ANDROID AND NOT DOLPHIN_SWITCH)
   dolphin_find_optional_system_library(HIDAPI Externals/hidapi)
 endif()
 
@@ -767,7 +791,9 @@ if(USE_MGBA)
   dolphin_find_optional_system_library(LIBMGBA Externals/mGBA 0.11)
 endif()
 
-find_package(SYSTEMD)
+if(NOT DOLPHIN_SWITCH)
+  find_package(SYSTEMD)
+endif()
 if(SYSTEMD_FOUND)
   message(STATUS "libsystemd found, enabling traversal server watchdog support")
   add_definitions(-DHAVE_LIBSYSTEMD)

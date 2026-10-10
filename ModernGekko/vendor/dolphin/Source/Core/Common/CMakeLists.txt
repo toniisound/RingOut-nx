@@ -187,7 +187,6 @@ PUBLIC
   sfml-network
 
 PRIVATE
-  CURL::libcurl
   FatFs
   spng::spng
   watcher
@@ -226,7 +225,24 @@ elseif(HAIKU)
   target_link_libraries(common PRIVATE be GL)
 endif()
 
-if(ANDROID)
+if(NOT DOLPHIN_SWITCH)
+  target_link_libraries(common PRIVATE CURL::libcurl)
+else()
+  # No libcurl on Switch (HttpRequest fails every request cleanly) and no
+  # mmap (MemoryUtil allocates from the heap).
+  get_target_property(_common_sources common SOURCES)
+  list(REMOVE_ITEM _common_sources HttpRequest.cpp MemoryUtil.cpp)
+  set_property(TARGET common PROPERTY SOURCES ${_common_sources})
+  target_sources(common PRIVATE HttpRequestStub.cpp MemoryUtilSwitch.cpp
+    Switch/SwitchNet.cpp Switch/SwitchNet.h)
+endif()
+
+if(DOLPHIN_SWITCH)
+  target_sources(common PRIVATE
+    Logging/ConsoleListenerNix.cpp
+    MemArenaSwitch.cpp
+  )
+elseif(ANDROID)
   target_sources(common PRIVATE
     Logging/ConsoleListenerDroid.cpp
     MemArenaAndroid.cpp
@@ -308,6 +324,31 @@ if(ENABLE_EGL AND EGL_FOUND)
   target_link_libraries(common PUBLIC ${EGL_LIBRARIES})
 endif()
 
+if(DOLPHIN_SWITCH)
+  # OpenGL through switch-mesa: EGL on the default NWindow (GLContextEGLSwitch).
+  # Needs: dkp-pacman -S switch-mesa switch-libdrm_nouveau
+  find_path(SWITCH_EGL_INCLUDE_DIR EGL/egl.h)
+  find_library(SWITCH_EGL_LIBRARY EGL)
+  find_library(SWITCH_GLAPI_LIBRARY glapi)
+  find_library(SWITCH_DRM_NOUVEAU_LIBRARY drm_nouveau)
+  if(NOT SWITCH_EGL_INCLUDE_DIR OR NOT SWITCH_EGL_LIBRARY OR NOT SWITCH_GLAPI_LIBRARY OR
+     NOT SWITCH_DRM_NOUVEAU_LIBRARY)
+    message(FATAL_ERROR "Switch OpenGL needs switch-mesa and switch-libdrm_nouveau: "
+                        "sudo dkp-pacman -S switch-mesa switch-libdrm_nouveau")
+  endif()
+  target_sources(common PRIVATE
+    GL/GLInterface/EGL.cpp
+    GL/GLInterface/EGL.h
+    GL/GLInterface/EGLSwitch.cpp
+    GL/GLInterface/EGLSwitch.h
+  )
+  target_compile_definitions(common PRIVATE HAVE_EGL=1)
+  target_include_directories(common PUBLIC ${SWITCH_EGL_INCLUDE_DIR})
+  # Order matters for a static link: EGL needs glapi, both need drm_nouveau.
+  target_link_libraries(common PUBLIC
+    ${SWITCH_EGL_LIBRARY} ${SWITCH_GLAPI_LIBRARY} ${SWITCH_DRM_NOUVEAU_LIBRARY})
+endif()
+
 if(WIN32)
   target_sources(common PRIVATE
     GL/GLInterface/WGL.cpp
@@ -385,7 +426,7 @@ if(ENABLE_LLVM)
   endif()
 endif()
 
-if(UNIX)
+if(UNIX AND NOT DOLPHIN_SWITCH)
   # Posix networking code needs to be fixed for Windows
   add_executable(traversal_server TraversalServer.cpp)
   target_link_libraries(traversal_server PRIVATE common fmt::fmt)

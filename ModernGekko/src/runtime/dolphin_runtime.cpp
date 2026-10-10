@@ -6,6 +6,7 @@
 #include "VideoCommon/VideoBackendBase.h"
 
 #include "Common/MsgHandler.h"
+#include "Common/Thread.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
 #include "Core/HW/SI/SI_Device.h"
@@ -23,6 +24,9 @@
 #include "Core/PowerPC/StaticRecomp/StaticRecompCore.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
 #include "VideoCommon/OnScreenDisplay.h"
+#ifdef MODERNGEKKO_HAVE_SWITCH
+#include "VideoCommon/CommandProcessor.h"
+#endif
 #include "Core/RecompDeterminism.h"
 #include "Core/System.h"
 #include "DolphinNoGUI/Platform.h"
@@ -117,8 +121,43 @@ void Host_UpdateTitle(const std::string &) {
   auto &perf = Core::System::GetInstance().GetPerfMetrics();
   static const bool s_log_speed = std::getenv("STATICRECOMP_SPEED") != nullptr;
   if (s_log_speed)
+  {
+#ifdef MODERNGEKKO_HAVE_SWITCH
+    // Per-thread CPU load: which thread is the bottleneck, the recompiled
+    // game ("CPU thread") or the GPU thread ("Video thread").
+    // And how the CPU thread's time splits: native recompiled dispatches vs
+    // instructions run by the interpreter (no JIT here, so every
+    // non-recompiled instruction -- the OS exception vectors, self-modified
+    // chunks -- is interpreted).
+    static u64 s_last_native = 0, s_last_interp = 0, s_last_hook = 0;
+    u64 native = 0, interp = 0, hook = 0;
+    if (g_static_recomp_core)
+      g_static_recomp_core->GetProfileCounters(&native, &interp, &hook);
+    // GPU flushes on FIFO read-disable: count and CPU-thread time spent
+    // waiting this second; "live" counts FIFO register writes made while
+    // the GPU was still reading (since boot).
+    static u64 s_last_flushes = 0, s_last_flush_us = 0;
+    u64 flushes = 0, flush_us = 0, live_writes = 0;
+    CommandProcessor::GetSwitchFifoStats(&flushes, &flush_us, &live_writes);
+    std::fprintf(stderr,
+                 "[perf] speed=%.1f%% fps=%.1f vps=%.1f | %s | native %.0fk/s interp %.0fk/s "
+                 "hook %.0fk/s | gpu-wait %llu/s %.1fms live %llu\n",
+                 perf.GetSpeed() * 100.0, perf.GetFPS(), perf.GetVPS(),
+                 Common::SwitchThreadLoadReport().c_str(), (native - s_last_native) / 1000.0,
+                 (interp - s_last_interp) / 1000.0, (hook - s_last_hook) / 1000.0,
+                 static_cast<unsigned long long>(flushes - s_last_flushes),
+                 (flush_us - s_last_flush_us) / 1000.0,
+                 static_cast<unsigned long long>(live_writes));
+    s_last_flushes = flushes;
+    s_last_flush_us = flush_us;
+    s_last_native = native;
+    s_last_interp = interp;
+    s_last_hook = hook;
+#else
     std::fprintf(stderr, "[perf] speed=%.1f%% fps=%.1f vps=%.1f\n",
                  perf.GetSpeed() * 100.0, perf.GetFPS(), perf.GetVPS());
+#endif
+  }
 
   std::string title = s_window_title;
   const bool windowed =
@@ -224,7 +263,8 @@ void RebindPadsToPresentDevices() {
   // present and would otherwise look like a valid answer.
   std::vector<std::string> gamepads;
   for (const std::string &device : available) {
-    if (device.starts_with("SDL/"))
+    // Switch/: the libnx controller backend (ControllerInterface/Switch).
+    if (device.starts_with("SDL/") || device.starts_with("Switch/"))
       gamepads.push_back(device);
   }
 
@@ -441,6 +481,9 @@ void InitializeUICommon(const std::filesystem::path &user_directory) {
 std::unique_ptr<Platform> CreateHostPlatform(const RuntimeConfig &config) {
   if (config.headless)
     return Platform::CreateHeadlessPlatform();
+#ifdef MODERNGEKKO_HAVE_SWITCH
+  return Platform::CreateSwitchPlatform();
+#endif
 #ifdef _WIN32
   return Platform::CreateWin32Platform();
 #endif
@@ -535,6 +578,14 @@ void ApplyCoreSettings(const GameMetadata &metadata) {
   // as it was for every disc but this one before.
   if (metadata.idle_pc)
     Config::SetBase(Config::MAIN_STATICRECOMP_IDLE_PC, *metadata.idle_pc);
+#ifdef MODERNGEKKO_HAVE_SWITCH
+  // Horizon commits every page it hands out, so the JIT's 64 GiB lazily-backed
+  // entry-point map cannot exist (MemArenaSwitch refuses it anyway), and there
+  // is no fastmem without the JIT.
+  Config::SetBase(Config::MAIN_LARGE_ENTRY_POINTS_MAP, false);
+  Config::SetBase(Config::MAIN_FASTMEM, false);
+  Config::SetBase(Config::MAIN_FASTMEM_ARENA, false);
+#endif
 }
 
 // The renderer picked in the in-game menu (RecompMenu.cpp, same key). Applied
@@ -597,7 +648,7 @@ bool VulkanHasGpu() {
 bool RendererCanStart(const std::string &name) {
   if (!RendererIsBuiltIn(name))
     return false;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(MODERNGEKKO_HAVE_SWITCH)
   // OpenGL is compiled into the Linux runtime but cannot initialise there
   // ("Failed to initialize video backend!"); the menu does not offer it, and an
   // ini that names it anyway must not lock the player out.
@@ -638,6 +689,9 @@ void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
       std::fprintf(stderr, "[video] no working Vulkan driver -- using Direct3D 11\n");
       backend = "D3D";
     }
+#elif defined(MODERNGEKKO_HAVE_SWITCH)
+    // switch-mesa (nouveau) is the only GPU driver homebrew can reach.
+    backend = "OGL";
 #else
     backend = "Vulkan";
 #endif
@@ -662,9 +716,19 @@ void ApplyGraphicsSettings(const GraphicsSettings &graphics, bool headless) {
                                                   : AspectMode::Auto);
   }
   Config::SetBase(Config::GFX_SHADER_CACHE, true);
+#ifdef MODERNGEKKO_HAVE_SWITCH
+  // Ubershaders are one enormous GLSL program per stage. Mesa compiles GLSL
+  // on the CPU, and on four Cortex-A57s that is minutes before the first
+  // frame, then a heavy shader on a small GPU for every draw. Specialised
+  // shaders compile as each new combination appears (a stutter the first
+  // time) and are cached for every later run.
+  Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE, ShaderCompilationMode::Synchronous);
+  Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, false);
+#else
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
   Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+#endif
 }
 
 // Resolves audio.backend to something this host actually offers, writing the

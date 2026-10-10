@@ -309,6 +309,17 @@ bool GLContextEGL::CreateWindowSurface()
     }
     m_backbuffer_width = static_cast<int>(surface_width);
     m_backbuffer_height = static_cast<int>(surface_height);
+    if (surface_width <= 1 || surface_height <= 1)
+    {
+      int fallback_width = 0, fallback_height = 0;
+      if (GetFallbackSurfaceSize(&fallback_width, &fallback_height))
+      {
+        WARN_LOG_FMT(VIDEO, "eglQuerySurface reported {}x{}; using the window's {}x{}",
+                     surface_width, surface_height, fallback_width, fallback_height);
+        m_backbuffer_width = fallback_width;
+        m_backbuffer_height = fallback_height;
+      }
+    }
   }
   else if (!m_supports_surfaceless)
   {

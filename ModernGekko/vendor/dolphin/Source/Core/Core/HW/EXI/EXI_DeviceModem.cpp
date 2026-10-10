@@ -9,6 +9,7 @@
 #include <string>
 
 #include "Common/ChunkFile.h"
+#include "Common/Network.h"  // htonl, via the platform's socket headers
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
 #include "Core/Config/MainSettings.h"

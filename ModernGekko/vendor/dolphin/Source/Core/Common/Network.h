@@ -15,6 +15,13 @@
 #if defined(__linux__) || defined(__HAIKU__)
 #include <sys/socket.h>
 #endif
+#ifdef __SWITCH__
+// glibc's socket headers pull in the byte-order helpers; libnx's BSD headers
+// do not, and several network sources rely on getting htons() through here.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 
 #include "Common/CommonTypes.h"
 

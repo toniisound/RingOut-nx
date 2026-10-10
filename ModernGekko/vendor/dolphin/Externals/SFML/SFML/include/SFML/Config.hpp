@@ -103,6 +103,13 @@
 
 #endif
 
+#elif defined(__SWITCH__)
+
+// Nintendo Switch homebrew (libnx): BSD sockets, no window/audio modules.
+// Only the network module is built for Dolphin, and it uses the Unix
+// socket implementation.
+#define SFML_SYSTEM_SWITCH
+
 #else
 
 // Unsupported system

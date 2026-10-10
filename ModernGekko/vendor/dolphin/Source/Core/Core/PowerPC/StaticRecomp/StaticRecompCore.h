@@ -99,6 +99,17 @@ public:
   const CommonAsmRoutinesBase* GetAsmRoutines() override { return nullptr; }
   const char* GetName() const override { return "StaticRecomp"; }
 
+  // Running totals for live profiling (the Switch port's [perf] line): native
+  // dispatches, interpreted instructions, and instructions interpreted on
+  // behalf of hooks. Read from another thread without locking -- fine for a
+  // once-a-second rate.
+  void GetProfileCounters(u64* native, u64* interpreted, u64* hook_interpreted) const
+  {
+    *native = m_native_dispatches;
+    *interpreted = m_fallback_steps;
+    *hook_interpreted = m_hook_fallback_instructions;
+  }
+
 private:
   // JitBaseBlockCache with no generated blocks; exists so generic
   // icache-invalidation plumbing in JitInterface has a real object to talk

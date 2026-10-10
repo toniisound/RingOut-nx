@@ -32,6 +32,11 @@ public:
 protected:
   virtual EGLDisplay OpenEGLDisplay();
   virtual EGLNativeWindowType GetEGLNativeWindow(EGLConfig config);
+  // Called when eglQuerySurface reports a degenerate (0 or 1 pixel) window
+  // size. Some EGL implementations only learn the size once the first buffer
+  // is dequeued; a platform that knows it can supply it here. Returns false to
+  // keep what the query said.
+  virtual bool GetFallbackSurfaceSize(int* width, int* height) { return false; }
 
   bool Initialize(const WindowSystemInfo& wsi, bool stereo, bool core) override;
 

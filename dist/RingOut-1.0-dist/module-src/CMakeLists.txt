@@ -47,7 +47,23 @@ if(CHUNK_OBJECTS AND NOT CHUNK_SOURCES)
   message(STATUS "module: linking ${GENERATED_DIR}/chunks as LLVM objects")
 endif()
 
-add_library(${MODULE_NAME} SHARED
+# MODULE_STATIC builds an archive instead of a .so, for hosts with no dynamic
+# loader (the Nintendo Switch .nro links it in; see ModernGekko/platform/switch).
+# The ABI is unchanged: the runtime is handed staticrecomp_get_module()'s
+# descriptor directly instead of finding it with dlsym.
+if(NINTENDO_SWITCH)
+  set(_module_static_default ON)
+else()
+  set(_module_static_default OFF)
+endif()
+option(MODULE_STATIC "Build the module as a static library" ${_module_static_default})
+if(MODULE_STATIC)
+  set(_module_kind STATIC)
+else()
+  set(_module_kind SHARED)
+endif()
+
+add_library(${MODULE_NAME} ${_module_kind}
   "${MODULE_TEMPLATE}/module_export.c"
   "${MODULE_TABLES}"
   "${DOLRECOMP_SRC}/cpu/cpu.c"
@@ -157,7 +173,15 @@ target_link_libraries(${MODULE_NAME} PRIVATE m)
 # instrumented objects are LTO IR, and mixing them with a non-LTO link silently
 # produces a 21 KB stub that loads and does nothing. Not for shipping -- LTO is
 # worth 5-6 minutes of link time here and was measured, not assumed.
-option(MODULE_LTO "Link the module with LTO" ON)
+# A static module is linked by whoever links the .nro, so LTO objects in it
+# would also need gcc-ar and -flto on that final link. Off until the Switch
+# build has been measured with it.
+if(MODULE_STATIC)
+  set(_module_lto_default OFF)
+else()
+  set(_module_lto_default ON)
+endif()
+option(MODULE_LTO "Link the module with LTO" ${_module_lto_default})
 if(NOT MODULE_LTO)
   set(MODULE_LTO_FLAG -fno-lto)
 elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -227,7 +251,7 @@ set(MODULE_LINK_CACHE "" CACHE STRING
 # present -- see the -flto=thin note above, which killed the module build on
 # every machine without it. A player who has clang but not lld must get the
 # ordinary linker, not a failed setup.
-if(MODULE_LTO AND MODULE_LLD AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND UNIX AND NOT APPLE)
+if(MODULE_LTO AND MODULE_LLD AND NOT MODULE_STATIC AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND UNIX AND NOT APPLE)
   include(CheckCSourceCompiles)
   set(CMAKE_REQUIRED_LINK_OPTIONS -fuse-ld=lld)
   check_c_source_compiles("int main(void){return 0;}" MODULE_LLD_USABLE)

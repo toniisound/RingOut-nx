@@ -64,6 +64,15 @@ inline constexpr StaticRecompFmvHookRow kStaticRecompFmvHookTable[] = {
 inline StaticRecompFmvHookPcs StaticRecompFindFmvHooks(const char* game_id,
                                                        bool allow_unplaytested)
 {
+#ifdef __SWITCH__
+  // The native movie player decodes through an ffmpeg subprocess, and Horizon
+  // cannot spawn one. With no hooks the game plays its movies with its own
+  // Sofdec decoder, as on real hardware -- slower, but correct, instead of the
+  // black picture a failed takeover leaves behind.
+  (void)game_id;
+  (void)allow_unplaytested;
+  return {};
+#endif
   if (game_id == nullptr)
     return {};
   for (const auto& row : kStaticRecompFmvHookTable)

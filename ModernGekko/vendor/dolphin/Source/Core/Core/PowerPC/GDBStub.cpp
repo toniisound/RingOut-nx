@@ -15,10 +15,13 @@
 typedef SSIZE_T ssize_t;
 #define SHUT_RDWR SD_BOTH
 #else
+#include <arpa/inet.h>  // htons/ntohl: netinet/in.h only brings them in on glibc
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#ifndef __SWITCH__  // Horizon has no UNIX-domain sockets
 #include <sys/un.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -1047,7 +1050,12 @@ void ProcessCommands(bool loop_until_continue)
 static void InitGeneric(int domain, const sockaddr* server_addr, socklen_t server_addrlen,
                         sockaddr* client_addr, socklen_t* client_addrlen);
 
-#ifndef _WIN32
+#ifdef __SWITCH__
+void InitLocal(const char*)
+{
+  ERROR_LOG_FMT(GDB_STUB, "UNIX-domain sockets are not available; use a TCP port instead");
+}
+#elif !defined(_WIN32)
 void InitLocal(const char* socket)
 {
   unlink(socket);

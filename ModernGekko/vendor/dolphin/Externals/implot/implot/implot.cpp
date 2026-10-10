@@ -916,6 +916,10 @@ ImPlotTime MkGmtTime(struct tm *ptm) {
     ImPlotTime t;
 #ifdef _WIN32
     t.S = _mkgmtime(ptm);
+#elif defined(__SWITCH__)
+    // newlib has no timegm(); with no TZ set (libnx never sets one) mktime()
+    // already works in UTC.
+    t.S = mktime(ptm);
 #else
     t.S = timegm(ptm);
 #endif

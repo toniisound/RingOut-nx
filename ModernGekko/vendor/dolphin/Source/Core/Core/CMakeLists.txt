@@ -876,7 +876,10 @@ elseif(APPLE)
     HW/EXI/BBA/TAP_Apple.cpp
   )
   target_link_libraries(core PUBLIC ${IOB_LIBRARY})
-elseif(UNIX)
+elseif(UNIX OR DOLPHIN_SWITCH)
+  # devkitPro's toolchain does not set UNIX. TAP_Unix.cpp is still the right
+  # file for the Switch: outside Linux it compiles to "no TAP device" stubs,
+  # and TAPNetworkInterface needs some definition to link.
   target_sources(core PRIVATE
     HW/EXI/BBA/TAP_Unix.cpp
   )

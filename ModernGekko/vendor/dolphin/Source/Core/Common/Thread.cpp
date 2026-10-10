@@ -11,6 +11,15 @@
 #include <unistd.h>
 #endif
 
+#ifdef __SWITCH__
+#include <cstdio>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <switch.h>
+#endif
+
 #ifdef __APPLE__
 #include <mach/mach.h>
 #elif defined BSD4_4 || defined __FreeBSD__ || defined __OpenBSD__
@@ -124,6 +133,144 @@ void SetCurrentThreadName(const char* name)
   SetCurrentThreadNameViaException(name);
 #endif
   SetCurrentThreadNameViaApi(name);
+}
+
+#elif defined(__SWITCH__)
+
+// Horizon does not migrate threads between cores. libnx starts every pthread
+// on the process's default core (core 0), so without intervention the CPU
+// thread, the GPU thread and everything else would time-slice one core while
+// the other two sit idle -- dual-core mode would buy nothing. Applications own
+// cores 0-2 (core 3 belongs to the system).
+//
+// Dolphin names its threads as they start, and that is the one hook every
+// thread passes through, so placement is keyed on the name: the recompiled
+// CPU thread gets core 1 to itself, the GPU thread core 2, and everything else
+// (the host loop, audio, shader compiler workers) shares core 0.
+namespace
+{
+// Named threads and their handles, for SwitchThreadLoadReport(). Small and
+// append-only: Dolphin names a handful of long-lived threads.
+struct NamedThread
+{
+  std::string name;
+  Handle handle;
+  u64 last_ticks;
+};
+std::mutex s_named_threads_mutex;
+std::vector<NamedThread> s_named_threads;
+u64 s_last_report_tick = 0;
+
+u64 ThreadTicks(Handle handle)
+{
+  u64 ticks = 0;
+  if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, handle, -1)))
+    svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, handle, -1);
+  return ticks;
+}
+
+void RegisterNamedThread(const char* name)
+{
+  const Handle handle = threadGetCurHandle();
+  std::lock_guard lock(s_named_threads_mutex);
+  for (NamedThread& t : s_named_threads)
+  {
+    if (t.handle == handle)
+    {
+      t.name = name;
+      return;
+    }
+  }
+  s_named_threads.push_back({name, handle, ThreadTicks(handle)});
+}
+
+void PinCurrentThreadToCore(s32 core)
+{
+  svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);
+}
+
+s32 CoreForThreadName(std::string_view name)
+{
+  if (name == "CPU thread")
+    return 1;
+  if (name == "Video thread" || name == "CPU-GPU thread" || name == "FIFO-GPU thread")
+    return 2;
+  return 0;
+}
+}  // namespace
+
+void SetThreadAffinity(std::thread::native_handle_type, u32)
+{
+  // Only the calling thread's handle is reachable through pthreads here.
+}
+
+void SetCurrentThreadAffinity(u32 mask)
+{
+  for (s32 core = 0; core < 3; ++core)
+  {
+    if (mask & (1u << core))
+    {
+      svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, mask & 0x7u);
+      return;
+    }
+  }
+}
+
+void SleepCurrentThread(int ms)
+{
+  svcSleepThread(static_cast<s64>(ms) * 1000000);
+}
+
+void SwitchCurrentThread()
+{
+  // Yield to another thread on the same core, as usleep(1000) does elsewhere.
+  svcSleepThread(1000000);
+}
+
+void SetCurrentThreadName(const char* name)
+{
+  PinCurrentThreadToCore(CoreForThreadName(name));
+  RegisterNamedThread(name);
+}
+
+std::string SwitchThreadLoadReport()
+{
+  std::lock_guard lock(s_named_threads_mutex);
+  const u64 now = armGetSystemTick();
+  const u64 elapsed = s_last_report_tick ? now - s_last_report_tick : 0;
+  s_last_report_tick = now;
+  std::string out;
+  for (NamedThread& t : s_named_threads)
+  {
+    const u64 ticks = ThreadTicks(t.handle);
+    const u64 used = ticks - t.last_ticks;
+    t.last_ticks = ticks;
+    // Idle threads are noise; only report the ones doing real work.
+    if (elapsed == 0 || used * 20 < elapsed)
+      continue;
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%s%s %u%%", out.empty() ? "" : ", ", t.name.c_str(),
+                  static_cast<unsigned>(used * 100 / elapsed));
+    out += buf;
+  }
+  return out;
+}
+
+u32 SwitchFindThreadHandle(const char* name)
+{
+  std::lock_guard lock(s_named_threads_mutex);
+  for (const NamedThread& t : s_named_threads)
+  {
+    if (t.name == name)
+      return t.handle;
+  }
+  return 0;
+}
+
+std::tuple<void*, size_t> GetCurrentThreadStack()
+{
+  const Thread* self = threadGetSelf();
+  return std::make_tuple(self->stack_mirror, self->stack_sz);
 }
 
 #else  // !WIN32, so must be POSIX threads

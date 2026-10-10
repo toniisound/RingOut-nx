@@ -56,6 +56,11 @@ public:
   static std::unique_ptr<Platform> CreateMacOSPlatform();
 #endif
 
+#ifdef __SWITCH__
+  // nwindow + applet loop; see PlatformSwitch.cpp.
+  static std::unique_ptr<Platform> CreateSwitchPlatform();
+#endif
+
 protected:
   void UpdateRunningFlag();
 

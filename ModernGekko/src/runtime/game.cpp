@@ -146,7 +146,14 @@ std::optional<std::vector<std::uint8_t>> ReadFile(const std::filesystem::path& p
 GameInspectResult InspectGame(const std::filesystem::path& input_root)
 {
   std::error_code ec;
+#ifdef __SWITCH__
+  // libstdc++ does not know "sdmc:/" is a root: it treats the path as relative
+  // and prefixes the working directory, producing "sdmc:/.../sdmc:/...". The
+  // frontend always passes an absolute device path, so normalise lexically only.
+  const auto root = input_root.lexically_normal();
+#else
   const auto root = std::filesystem::weakly_canonical(input_root, ec);
+#endif
   if (ec || !std::filesystem::is_directory(root))
     return {{}, "game root is not a readable directory"};
   const auto dol_path = root / "sys" / "main.dol";

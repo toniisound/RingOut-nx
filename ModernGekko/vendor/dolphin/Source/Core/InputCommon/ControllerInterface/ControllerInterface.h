@@ -38,6 +38,9 @@
 #if defined(HAVE_HIDAPI)
 #define CIFACE_USE_STEAMDECK
 #endif
+#if defined(__SWITCH__)
+#define CIFACE_USE_SWITCH
+#endif
 
 namespace ciface
 {

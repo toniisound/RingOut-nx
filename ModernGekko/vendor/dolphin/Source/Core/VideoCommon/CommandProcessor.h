@@ -159,6 +159,14 @@ constexpr u32 GetPhysicalAddressMask(bool is_wii)
   return is_wii ? 0x1fffffff : 0x03ffffff;
 }
 
+#ifdef __SWITCH__
+// Switch port diagnostics, summed since boot (read by the [perf] line):
+// how often the CPU thread waited for the GPU thread on a read disable, the
+// total time it waited, and FIFO base/end/write-pointer writes that arrived
+// while the GPU was still reading (a swap the flush cannot cover).
+void GetSwitchFifoStats(u64* flushes, u64* flush_us, u64* live_writes);
+#endif
+
 class CommandProcessorManager
 {
 public:

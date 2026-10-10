@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string>
 #include <thread>
 
 #ifndef _WIN32
@@ -42,6 +43,16 @@ void SetCurrentThreadName(const char* name);
 #ifndef _WIN32
 // Returns the lowest address of the stack and the size of the stack
 std::tuple<void*, size_t> GetCurrentThreadStack();
+
+#ifdef __SWITCH__
+// CPU time used by each named thread since the previous call, as
+// "CPU thread 98% Video thread 41% ...". Threads register by naming themselves
+// (SetCurrentThreadName). Bring-up profiling for the Switch port.
+std::string SwitchThreadLoadReport();
+// Kernel handle of the named thread (as passed to SetCurrentThreadName), or 0
+// if no thread of that name has started yet. For the sampling profiler.
+u32 SwitchFindThreadHandle(const char* name);
+#endif
 #endif
 
 }  // namespace Common

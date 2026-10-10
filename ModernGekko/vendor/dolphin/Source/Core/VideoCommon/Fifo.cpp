@@ -323,6 +323,13 @@ void FifoManager::RunGpuLoop()
             if (m_config_sync_gpu && m_sync_ticks.load() < m_config_sync_gpu_min_distance)
               break;
 
+            // The distance just read says the CPU thread has published another
+            // 32 bytes (its fetch_add is seq_cst, i.e. a release). Pair it with
+            // an acquire so the FIFO bytes in guest RAM are read after it: on
+            // ARM, unlike x86, a load is free to run ahead of an earlier one,
+            // and would then see the buffer before the CPU wrote it.
+            std::atomic_thread_fence(std::memory_order_acquire);
+
             u32 cyclesExecuted = 0;
             u32 readPtr = fifo.CPReadPointer.load(std::memory_order_relaxed);
             // Snapshot the FIFO this batch belongs to. RunFifo() below can run

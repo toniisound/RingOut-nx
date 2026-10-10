@@ -161,3 +161,4 @@ compile_commands.json
 # the privacy scan could not see it because it was inside a .tar.gz.
 __pycache__/
 *.pyc
+/build-switch/

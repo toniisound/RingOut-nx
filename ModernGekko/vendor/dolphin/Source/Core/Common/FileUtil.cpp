@@ -63,6 +63,10 @@ namespace fs = std::filesystem;
 
 namespace File
 {
+#ifdef __SWITCH__
+static std::string s_switch_sys_directory;
+#endif
+
 #ifdef ANDROID
 static std::string s_android_sys_directory;
 static std::string s_android_driver_directory;
@@ -282,6 +286,15 @@ bool Rename(const std::string& srcFilename, const std::string& destFilename)
 {
   DEBUG_LOG_FMT(COMMON, "{}: {} --> {}", __func__, srcFilename, destFilename);
   std::error_code error;
+#ifdef __SWITCH__
+  // POSIX rename() replaces an existing destination; Horizon's filesystems
+  // refuse instead, which broke every atomic save (write temp, rename over).
+  // Remove the old file first. Not atomic, but the temp file still holds the
+  // new data if anything fails in between.
+  if (std::filesystem::is_regular_file(StringToPath(destFilename), error))
+    std::filesystem::remove(StringToPath(destFilename), error);
+  error.clear();
+#endif
   std::filesystem::rename(StringToPath(srcFilename), StringToPath(destFilename), error);
   if (error)
   {
@@ -665,10 +678,14 @@ std::string CreateTempDir()
 
 std::string GetTempFilenameForAtomicWrite(std::string path)
 {
+#ifndef __SWITCH__
+  // Not on Switch: "sdmc:/..." is already absolute, but libstdc++ does not
+  // know device prefixes and would prepend the working directory to it.
   std::error_code error;
   auto absolute_path = fs::absolute(StringToPath(path), error);
   if (!error)
     path = PathToString(absolute_path);
+#endif
   return std::move(path) + ".xxx";
 }
 
@@ -732,6 +749,10 @@ std::string GetExePath()
   return PathToString(exe_path_absolute);
 #elif defined(__APPLE__)
   return GetBundleDirectory();
+#elif defined(__SWITCH__)
+  // No /proc on Horizon. The real location only matters for logging: the Sys
+  // directory is set explicitly by the frontend (SetSysDirectory).
+  return "sdmc:/switch/RingOut/RingOut.nro";
 #elif defined(__FreeBSD__)
   int name[4]{CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
   size_t length = 0;
@@ -776,6 +797,8 @@ static std::string CreateSysDirectoryPath()
   const std::string sys_directory = GetBundleDirectory() + DIR_SEP SYSDATA_DIR DIR_SEP;
 #elif defined(_WIN32) || defined(LINUX_LOCAL_DEV)
   const std::string sys_directory = GetExeDirectory() + DIR_SEP SYSDATA_DIR DIR_SEP;
+#elif defined __SWITCH__
+  const std::string sys_directory = s_switch_sys_directory + DIR_SEP;
 #elif defined ANDROID
   const std::string sys_directory = s_android_sys_directory + DIR_SEP;
   ASSERT_MSG(COMMON, !s_android_sys_directory.empty(), "Sys directory has not been set");
@@ -792,6 +815,13 @@ const std::string& GetSysDirectory()
   static const std::string sys_directory = CreateSysDirectoryPath();
   return sys_directory;
 }
+
+#ifdef __SWITCH__
+void SetSysDirectory(const std::string& path)
+{
+  s_switch_sys_directory = path;
+}
+#endif
 
 #ifdef ANDROID
 void SetSysDirectory(const std::string& path)

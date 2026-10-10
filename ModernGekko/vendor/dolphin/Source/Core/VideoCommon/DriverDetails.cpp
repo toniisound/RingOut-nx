@@ -43,6 +43,10 @@ constexpr u32 m_os = OS_ALL | OS_OPENBSD;
 constexpr u32 m_os = OS_ALL | OS_NETBSD;
 #elif __HAIKU__
 constexpr u32 m_os = OS_ALL | OS_HAIKU;
+#elif defined(__SWITCH__)
+// Homebrew GL on the Switch is Mesa's nouveau driver, so the Linux entries for
+// it are the ones that apply.
+constexpr u32 m_os = OS_ALL | OS_LINUX;
 #endif
 
 static API m_api = API_OPENGL;

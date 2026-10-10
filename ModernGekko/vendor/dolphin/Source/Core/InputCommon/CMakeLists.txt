@@ -161,7 +161,18 @@ elseif(ANDROID)
   )
 endif()
 
-if(NOT ANDROID)
+if(DOLPHIN_SWITCH)
+  # Switch controllers through libnx HID (Pro Controller, Joy-Con, handheld).
+  target_sources(inputcommon PRIVATE
+    ControllerInterface/Switch/Switch.cpp
+    ControllerInterface/Switch/Switch.h
+  )
+  # No USB host access for homebrew: the GameCube adapter is never detected.
+  get_target_property(_inputcommon_sources inputcommon SOURCES)
+  list(REMOVE_ITEM _inputcommon_sources GCAdapter.cpp)
+  set_property(TARGET inputcommon PROPERTY SOURCES ${_inputcommon_sources})
+  target_sources(inputcommon PRIVATE GCAdapterStub.cpp)
+elseif(NOT ANDROID)
   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
 endif()
 
@@ -183,7 +194,7 @@ if(LIBEVDEV_FOUND AND LIBUDEV_FOUND)
   )
 endif()
 
-if(UNIX)
+if(UNIX AND NOT DOLPHIN_SWITCH)
   target_sources(inputcommon PRIVATE
     ControllerInterface/Pipes/Pipes.cpp
     ControllerInterface/Pipes/Pipes.h

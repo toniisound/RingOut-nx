@@ -7,9 +7,9 @@
 
 #include <fmt/format.h>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include <Windows.h>
-#else
+#elif !defined(__SWITCH__)
 #include <dlfcn.h>
 #endif
 
@@ -77,6 +77,33 @@ std::string DynamicLibrary::GetVersionedFilename(const char* libname, int major,
 #endif
 }
 
+#ifdef __SWITCH__
+namespace
+{
+DynamicLibrary::StaticSymbolResolver s_static_resolver = nullptr;
+}
+
+void DynamicLibrary::SetStaticSymbolResolver(StaticSymbolResolver resolver)
+{
+  s_static_resolver = resolver;
+}
+
+bool DynamicLibrary::Open(const char*)
+{
+  m_handle = nullptr;
+  return false;
+}
+
+void DynamicLibrary::Close()
+{
+  m_handle = nullptr;
+}
+
+void* DynamicLibrary::GetSymbolAddress(const char* name) const
+{
+  return s_static_resolver ? s_static_resolver(name) : nullptr;
+}
+#else
 bool DynamicLibrary::Open(const char* filename)
 {
 #ifdef _WIN32
@@ -108,4 +135,5 @@ void* DynamicLibrary::GetSymbolAddress(const char* name) const
   return reinterpret_cast<void*>(dlsym(m_handle, name));
 #endif
 }
+#endif  // __SWITCH__
 }  // namespace Common

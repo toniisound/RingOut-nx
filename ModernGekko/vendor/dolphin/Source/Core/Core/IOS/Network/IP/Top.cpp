@@ -40,6 +40,14 @@
 #define MALLOC(x) HeapAlloc(GetProcessHeap(), 0, (x))
 #define FREE(x) HeapFree(GetProcessHeap(), 0, (x))
 
+#elif defined(__SWITCH__)
+// No getifaddrs()/res_init() on Horizon; nifm answers both (Common/Switch).
+#include <bit>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include "Common/Switch/SwitchNet.h"
 #else
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -390,6 +398,18 @@ static std::optional<DefaultInterface> GetSystemDefaultInterface()
     routing_table = {{0, 0, 0, gateway}};
   if (addr || netmask || gateway)
     return DefaultInterface{addr, netmask, gateway, routing_table};
+#elif defined(__SWITCH__)
+  Common::SwitchNet::IpConfig ip;
+  if (Common::SwitchNet::GetCurrentIpConfig(&ip))
+  {
+    const auto to_in_addr = [](u32 value) { return std::bit_cast<in_addr>(value); };
+    // this isn't fully correct, but this will make calls to get the routing table at least return
+    // the gateway
+    if (routing_table.empty())
+      routing_table = {{0, {}, {}, to_in_addr(ip.gateway)}};
+    return DefaultInterface{to_in_addr(ip.address), to_in_addr(ip.netmask),
+                            to_in_addr(ip.address | ~ip.netmask), routing_table};
+  }
 #else
   // Assume that the address that is used to access the Internet corresponds
   // to the default interface.
@@ -1115,6 +1135,13 @@ IPCReply NetIPTopDevice::HandleGetInterfaceOptRequest(const IOCtlVRequest& reque
       {
         WARN_LOG_FMT(IOS_NET, "Call to res_init failed");
       }
+    }
+#elif defined(__SWITCH__)
+    if (!Core::WantsDeterminism())
+    {
+      Common::SwitchNet::IpConfig ip;
+      if (Common::SwitchNet::GetCurrentIpConfig(&ip) && ip.primary_dns != 0)
+        address = ntohl(ip.primary_dns);
     }
 #endif
     if (address == 0)
